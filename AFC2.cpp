@@ -27,15 +27,17 @@ struct ProcessMemory {
     std::vector<std::vector<char>> memory_blocks;
 };
 
-std::vector<ProcessMemory> processes(NUM_PROCESSES, {200, 200, 0, 0, 0});
+std::vector<ProcessMemory> processes(NUM_PROCESSES, {200, 200, 0, 0, 0}); // vetor de informações sobre a memoria do processo
 
 std::mutex budget_mutex;
 std::condition_variable budget_cv;
 
+// gerador de valores aleatórios para a alocação 
 int random_value(int min, int max) {
     return min + (std::rand() % (max - min + 1));
 }
 
+// ocilador de memoria
 void MemoryOscillation(int pid) {
     processes[pid].thread_id = syscall(SYS_gettid);
 
@@ -46,6 +48,7 @@ void MemoryOscillation(int pid) {
         {
             std::unique_lock<std::mutex> lock(budget_mutex);
 
+            // limite global ultrapassado
             if (global_budget < allocation_size) {
                 lock.unlock();
                 std::this_thread::sleep_for(std::chrono::milliseconds(random_value(500, 1500)));
