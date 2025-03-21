@@ -15,8 +15,9 @@
 #define max_limit 1000
 #define min_limit 10
 #define NUM_PROCESSES 4
+#define reserve_budget 100 // Margem de segurança para evitar esgotamento
 
-double global_budget = 800;
+double global_budget = 900;
 
 struct ProcessMemory {
     double read_budget;
@@ -27,41 +28,32 @@ struct ProcessMemory {
     std::vector<std::vector<char>> memory_blocks;
 };
 
-std::vector<ProcessMemory> processes(NUM_PROCESSES, {200, 200, 0, 0, 0}); // vetor de informações sobre a memoria do processo
-
+std::vector<ProcessMemory> processes(NUM_PROCESSES, {200, 200, 0, 0, 0});
 std::mutex budget_mutex;
 std::condition_variable budget_cv;
 
-// gerador de valores aleatórios para a alocação 
 int random_value(int min, int max) {
     return min + (std::rand() % (max - min + 1));
 }
 
-// ocilador de memoria
 void MemoryOscillation(int pid) {
     processes[pid].thread_id = syscall(SYS_gettid);
 
     while (true) {
         int allocation_size = random_value(10, 120);
-        int deallocation_size = random_value(10, allocation_size);
+        int deallocation_size = random_value(allocation_size / 2, allocation_size);
 
         {
             std::unique_lock<std::mutex> lock(budget_mutex);
-
-            // limite global ultrapassado
-            if (global_budget < allocation_size) {
-                lock.unlock();
-                std::this_thread::sleep_for(std::chrono::milliseconds(random_value(500, 1500)));
+            budget_cv.wait(lock, []{ return global_budget > reserve_budget; });
+            
+            if (global_budget - allocation_size < reserve_budget) {
                 continue;
             }
 
             std::vector<char> block(allocation_size * 1024 * 1024, 1);
             processes[pid].memory_blocks.push_back(std::move(block));
-
-            for (size_t i = 0; i < processes[pid].memory_blocks.back().size(); i += 4096) {
-                processes[pid].memory_blocks.back()[i] = static_cast<char>(i % 256);
-            }
-
+            
             processes[pid].read_usage += allocation_size / 2.0;
             processes[pid].write_usage += allocation_size / 2.0;
             global_budget -= allocation_size;
@@ -72,20 +64,16 @@ void MemoryOscillation(int pid) {
                       << global_budget << "MB\n";
         }
 
+        budget_cv.notify_all(); // Garante que outras threads sejam despertadas
         std::this_thread::sleep_for(std::chrono::milliseconds(random_value(500, 1500)));
 
         {
             std::lock_guard<std::mutex> lock(budget_mutex);
-
             if (!processes[pid].memory_blocks.empty()) {
                 processes[pid].memory_blocks.pop_back();
                 processes[pid].read_usage -= deallocation_size / 2.0;
                 processes[pid].write_usage -= deallocation_size / 2.0;
                 global_budget += deallocation_size;
-
-                if (processes[pid].read_usage < 0) processes[pid].read_usage = 0;
-                if (processes[pid].write_usage < 0) processes[pid].write_usage = 0;
-                if (global_budget > 800) global_budget = 800;
 
                 std::cout << "[THREAD " << processes[pid].thread_id << "] Liberado " << deallocation_size << "MB | Read: "
                           << processes[pid].read_usage << "MB | Write: "
@@ -127,46 +115,28 @@ void MemoryMeasurement(int pid) {
             processes[pid].write_usage = vmData;
         }
 
+        budget_cv.notify_all(); // Evita starvation
         std::this_thread::sleep_for(std::chrono::seconds(2));
     }
 }
 
-void ReadMemoryAllocator(int pid) {
+void AdjustBudget(int pid, bool is_read) {
     while (true) {
         {
             std::lock_guard<std::mutex> lock(budget_mutex);
-
-            double error = processes[pid].read_usage - processes[pid].read_budget;
+            double &usage = is_read ? processes[pid].read_usage : processes[pid].write_usage;
+            double &budget = is_read ? processes[pid].read_budget : processes[pid].write_budget;
+            double error = usage - budget;
             double adjust = Kp * error + random_value(-5, 5);
+            
+            budget += adjust;
+            if (budget > max_limit) budget = max_limit;
+            if (budget < min_limit) budget = min_limit;
 
-            processes[pid].read_budget += adjust;
-
-            if (processes[pid].read_budget > max_limit) processes[pid].read_budget = max_limit;
-            if (processes[pid].read_budget < min_limit) processes[pid].read_budget = min_limit;
-
-            std::cout << "[THREAD " << processes[pid].thread_id << "][READ] Ajustado para " << processes[pid].read_budget << "MB\n";
+            std::cout << "[THREAD " << processes[pid].thread_id << "][" << (is_read ? "READ" : "WRITE") << "] Ajustado para "
+                      << budget << "MB\n";
         }
-
-        std::this_thread::sleep_for(std::chrono::seconds(2));
-    }
-}
-
-void WriteMemoryAllocator(int pid) {
-    while (true) {
-        {
-            std::lock_guard<std::mutex> lock(budget_mutex);
-
-            double error = processes[pid].write_usage - processes[pid].write_budget;
-            double adjust = Kp * error + random_value(-5, 5);
-
-            processes[pid].write_budget += adjust;
-
-            if (processes[pid].write_budget > max_limit) processes[pid].write_budget = max_limit;
-            if (processes[pid].write_budget < min_limit) processes[pid].write_budget = min_limit;
-
-            std::cout << "[THREAD " << processes[pid].thread_id << "][WRITE] Ajustado para " << processes[pid].write_budget << "MB\n";
-        }
-
+        budget_cv.notify_all(); // Garante que ajustes não fiquem presos
         std::this_thread::sleep_for(std::chrono::seconds(2));
     }
 }
@@ -177,8 +147,8 @@ int main() {
 
     for (int i = 0; i < NUM_PROCESSES; ++i) {
         threads.emplace_back(MemoryMeasurement, i);
-        threads.emplace_back(ReadMemoryAllocator, i);
-        threads.emplace_back(WriteMemoryAllocator, i);
+        threads.emplace_back(AdjustBudget, i, true);
+        threads.emplace_back(AdjustBudget, i, false);
         threads.emplace_back(MemoryOscillation, i);
     }
 
@@ -188,3 +158,4 @@ int main() {
 
     return 0;
 }
+
