@@ -1,6 +1,10 @@
 #include <iostream>
 #include <ctime>
 #include <fstream>
+#include <vector>
+#include <thread>
+#include <sys/mman.h>
+#include <unistd.h>
 
 #define NUM_PROCESS 4
 #define Kp 0.5
@@ -14,12 +18,14 @@ struct ProcessMemory {
 };
 
 // get the current read memory usage
-double getMemoryUsageRead(int pid);
+double getMemoryUsageRead(pid_t pid);
 // get the current write memory usage
-double getMemoryUsageWrite();
-//
-double readMemory();
-double writeMemory();
+double getMemoryUsageWrite(pid_t pid);
+
+// regula o budget da memoria para leitura
+double readMemoryRegulation();
+// regula o budget para escrita
+double writeMemoryRegularion();
 
 void MemoryOcilation();
 

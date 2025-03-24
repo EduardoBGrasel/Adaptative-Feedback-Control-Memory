@@ -3,13 +3,19 @@
 #include <fstream>
 
 
-double getMemoryUsageRead(int pid) {
-    std::ifstream statusFile("/proc/self/status");
-    if (!statusFile) {
-        std::cerr << "Cannot read /proc/self/status\n";
-    }
-    else {
-        std::cout << "feito";
-    }
-    return 2.3;
+
+double getMemoryUsageRead(pid_t pid) {
+    std::string read = "read";
+    long i = readProcessStatus(pid, read);
+    return i;
+}
+
+double getMemoryUsageWrite(pid_t pid) {
+    std::string write = "write";
+    long i = readProcessStatus(pid, write);
+    return i;
+}
+
+double readMemoryRegulation(double real_use) {
+    
 }
